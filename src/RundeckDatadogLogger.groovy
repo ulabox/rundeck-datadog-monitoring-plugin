@@ -4,19 +4,22 @@ import groovy.json.JsonSlurper
 import groovy.text.SimpleTemplateEngine
 import groovy.text.Template
 
+import java.sql.Timestamp
+
 class Point {
     Integer value
-    Date when
+    Timestamp when
 
     Point(Integer val) { this(val, new Date()) }
     Point(Integer val, Long whn) { this(val, new Date(whn * 1000)) }
-    Point(Integer val, Date whn) {
+    Point(Integer val, Date whn) { this(val, new Timestamp(whn.getTime())) }
+    Point(Integer val, Timestamp whn) {
         value = val
         when = whn
     }
 
     String toString() {
-        String.format('[%d, "%s"]', value, when.toTimestamp())
+        String.format('[%d, %d]', value, when.time)
     }
 }
 
@@ -26,7 +29,7 @@ class Serie {
     String host = ""
     List<String> tags = []
 
-    Serie(String _metric) { this(_metric, [])}
+    Serie (String _metric) { this(_metric, [])}
     Serie (String _metric, List<Point> _points) { this(_metric, _points, "") }
     Serie (String _metric, List<Point> _points, String _host) { this(_metric, _points, _host, []) }
     Serie (String _metric, List<Point> _points, String _host, List<String> _tags) {
@@ -35,37 +38,39 @@ class Serie {
         host = _host
         tags = _tags
     }
+
+    def encode() {
+        return [
+            metric: metric,
+            points: points.collect { Point p -> [p.when.getTime(), p.value]},
+            type: 'gauge',
+            host: host,
+            tags: tags
+        ]
+    }
 }
 
-class Api {
+class Client {
 
-    private String apiKey
-    private URL url
-
-    Api(String _apiKey) {
-        apiKey = _apiKey
-        url = new URL("https://app.datadoghq.com/api/v1/series?api_key=${apiKey}")
+    def store(Serie s, Map configuration) {
+        def jsonIn = new JsonBuilder([series: s.encode()])
+        URL url = new URL("https://app.datadoghq.com/api/v1/series?api_key=${configuration.api_key}")
+        post(url, jsonIn)
     }
 
-    def store(Serie s) {
+    def post(URL url, JsonBuilder json) {
         def connection = url.openConnection()
         connection.setRequestMethod("POST")
-        connection.addRequestProperty("Content-type", "application/json")
+        connection.addRequestProperty("Content-Type", "application/json")
         connection.doOutput = true
 
         connection.outputStream.withWriter { Writer w ->
-            w << new JsonBuilder([series: [
-                    metric: s.metric,
-                    points: s.points.collect {[it.when.getTime(), it.value]},
-                    type: 'gauge',
-                    host: s.host,
-                    tags: s.tags
-            ]]).toString()
+            w << json.toString()
         }
-        def json = connection.inputStream.withReader { Reader r -> new JsonSlurper().parse(r) }
+        def jsonOut = connection.inputStream.withReader { Reader r -> new JsonSlurper().parse(r) }
         connection.connect()
-        def status = json.status
-        if (!"success".equals(status)) {
+        def status = jsonOut.status
+        if ("success" != status) {
             System.err.println("ERROR: DatadogEventNotification plugin status: " + status)
             return false
         }
@@ -74,94 +79,89 @@ class Api {
     }
 }
 
-
 class MetricsPlugin {
-    private List<String> tags = []
-    private String host = ""
-    Api apiClient
+    Client client = new Client()
 
-    def format(Template template, Map binding) {
-        return template.make(binding)
+    String format(String text, Map bindings) { format(makeTpl(text), bindings) }
+    String format(Template template, Map binding) {
+        template.make(binding)
     }
 
-    def setHost(String _host) {
-        host = _host
+    private def makeTpl(String text) {
+        return new SimpleTemplateEngine().createTemplate(text)
     }
 
-    def setTags(List<String> _tags) {
-        tags = _tags
-    }
-
-    def addTag(String tag) {
-        tags.add(tag)
-    }
-
-    private def templateEngine = new SimpleTemplateEngine()
-    private def createTemplate(String text) {
-        return templateEngine.createTemplate(text)
+    def formatTags(List<String> tags, Map bindings) {
+        tags.collect { tag ->
+            format(makeTpl(tag), bindings)
+        }
     }
 
     def onStart(Map execution, Map configuration) {
         def point = new Point(0)
-        String metric = format(createTemplate(configuration.serie), [execution:execution])
-        Serie serie = new Serie(metric, [point], host, tags)
+        String metric = format(makeTpl(configuration.serie), [execution:execution])
+        Serie serie = new Serie(
+                metric,
+                [point],
+                (String) configuration.host,
+                formatTags((List<String>) configuration.tags, [execution: execution])
+        )
         println serie
-        apiClient.store(serie)
+        client.store(serie, configuration)
     }
 
     def onSuccess(Map execution, Map configuration) {
         def point = new Point(1)
-        String metric = format(createTemplate(configuration.serie), [execution:execution])
-        Serie serie = new Serie(metric, [point], host, tags)
+        String metric = format(makeTpl(configuration.serie), [execution:execution])
+        Serie serie = new Serie(
+                metric,
+                [point],
+                (String) configuration.host,
+                formatTags((List<String>) configuration.tags, [execution: execution])
+        )
         println serie
-        apiClient.store(serie)
+        client.store(serie, configuration)
     }
 
     def onFailure(Map execution, Map configuration) {
         def point = new Point(-1)
-        String metric = format(createTemplate(configuration.serie), [execution:execution])
-        Serie serie = new Serie(metric, [point], host, tags)
+        String metric = format(makeTpl(configuration.serie), [execution:execution])
+        Serie serie = new Serie(
+                metric,
+                [point],
+                (String) configuration.host,
+                formatTags((List<String>) configuration.tags, [execution: execution])
+        )
         println serie
-        apiClient.store(serie)
+        client.store(serie, configuration)
     }
 }
 
-def metrics = new MetricsPlugin()
-
 rundeckPlugin(NotificationPlugin){
     title='Datadog metric monitoring'
-    description='Does some action'
+    description='Sends signals to the metrics monitor in datadog.'
     configuration {
         serie title: 'Serie: ', description: 'Name for the serie:', required: true, defaultValue: 'rundeck.${execution.project}.${execution.group}.${execution.job.name}'
-        api_key(title: 'Api key', description: 'Application key', required: true, defaultValue: System.getenv('DATADOG_TOKEN')) {
-            metrics.setApiClient(new Api(it))
-            metrics.setHost(InetAddress.getLocalHost().getHostName())
-        }
-        tags(
-                title: 'Tags',
-                description: 'Default tags for that serie',
-                required: false,
+        api_key title: 'Api key', description: 'Application key', required: true, defaultValue: System.getenv('DATADOG_TOKEN')
+        tags title: 'Tags', description: 'Default tags for that serie', required: false,
                 defaultValue: 'rundeck:${execution.project},rundeck:${execution.group},rundeck:${execution.status},rundeck:${execution.project}:${execution.status}'
-        ) {
-            metrics.setTags( it.tokenize(",") )
-        }
     }
 
     onstart { Map execution, Map configuration ->
         println "ONSTART"
-        metrics.onStart(execution, configuration)
+        MetricsPlugin.onStart(execution, configuration)
 
         return true
     }
     onsuccess { Map execution, Map configuration ->
         println "ONSUCCESS"
-        metrics.onSuccess(execution, configuration)
+        MetricsPlugin.onSuccess(execution, configuration)
 
         return true
     }
     onfailure { Map execution, Map configuration ->
         println "ONFAILURE"
-        metrics.onFailure(execution, configuration)
+        MetricsPlugin.onFailure(execution, configuration)
 
         return true
     }
