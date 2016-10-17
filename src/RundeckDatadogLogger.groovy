@@ -4,22 +4,23 @@ import groovy.json.JsonSlurper
 import groovy.text.SimpleTemplateEngine
 import groovy.text.Template
 
-import java.sql.Timestamp
-
 class Point {
     Integer value
-    Timestamp when
+    Date when
 
     Point(Integer val) { this(val, new Date()) }
     Point(Integer val, Long whn) { this(val, new Date(whn * 1000)) }
-    Point(Integer val, Date whn) { this(val, new Timestamp(whn.getTime())) }
-    Point(Integer val, Timestamp whn) {
+    Point(Integer val, Date whn) {
         value = val
         when = whn
     }
 
+    Long unixSeconds() {
+        return when.getTime() / 1000
+    }
+
     String toString() {
-        String.format('[%d, %d]', value, when.time)
+        String.format('[%d, %d]', value, when.getTime())
     }
 }
 
@@ -42,7 +43,7 @@ class Serie {
     def encode() {
         return [
             metric: metric,
-            points: points.collect { Point p -> [p.when.getTime(), p.value]},
+            points: points.collect { Point p -> [p.unixSeconds(), p.value]},
             type: 'gauge',
             host: host,
             tags: tags
@@ -53,7 +54,7 @@ class Serie {
 class Client {
 
     def store(Serie s, Map configuration) {
-        def jsonIn = new JsonBuilder([series: s.encode()])
+        def jsonIn = new JsonBuilder([series: [s.encode()]])
         URL url = new URL("https://app.datadoghq.com/api/v1/series?api_key=${configuration.api_key}")
         post(url, jsonIn)
     }
@@ -70,7 +71,9 @@ class Client {
         def jsonOut = connection.inputStream.withReader { Reader r -> new JsonSlurper().parse(r) }
         connection.connect()
         def status = jsonOut.status
-        if ("success" != status) {
+        println json
+        println jsonOut
+        if ("ok" != status) {
             System.err.println("ERROR: DatadogEventNotification plugin status: " + status)
             return false
         }
@@ -98,41 +101,45 @@ class MetricsPlugin {
     }
 
     def onStart(Map execution, Map configuration) {
+        println execution
         def point = new Point(0)
         String metric = format(makeTpl(configuration.serie), [execution:execution])
+        List<String> tags = configuration.tags.tokenize(',')
         Serie serie = new Serie(
                 metric,
                 [point],
-                (String) configuration.host,
-                formatTags((List<String>) configuration.tags, [execution: execution])
+                (String) configuration.hostname,
+                formatTags(tags, [execution: execution])
         )
-        println serie
+        System.out.println serie
         client.store(serie, configuration)
     }
 
     def onSuccess(Map execution, Map configuration) {
         def point = new Point(1)
         String metric = format(makeTpl(configuration.serie), [execution:execution])
+        List<String> tags = configuration.tags.tokenize(',')
         Serie serie = new Serie(
                 metric,
                 [point],
-                (String) configuration.host,
-                formatTags((List<String>) configuration.tags, [execution: execution])
+                (String) configuration.hostname,
+                formatTags(tags, [execution: execution])
         )
-        println serie
+        System.out.println serie
         client.store(serie, configuration)
     }
 
     def onFailure(Map execution, Map configuration) {
         def point = new Point(-1)
         String metric = format(makeTpl(configuration.serie), [execution:execution])
+        List<String> tags = configuration.tags.tokenize(',')
         Serie serie = new Serie(
                 metric,
                 [point],
-                (String) configuration.host,
-                formatTags((List<String>) configuration.tags, [execution: execution])
+                (String) configuration.hostname,
+                formatTags(tags, [execution: execution])
         )
-        println serie
+        System.out.println serie
         client.store(serie, configuration)
     }
 }
@@ -141,28 +148,51 @@ rundeckPlugin(NotificationPlugin){
     title='Datadog metric monitoring'
     description='Sends signals to the metrics monitor in datadog.'
     configuration {
-        serie title: 'Serie: ', description: 'Name for the serie:', required: true, defaultValue: 'rundeck.${execution.project}.${execution.group}.${execution.job.name}'
-        api_key title: 'Api key', description: 'Application key', required: true, defaultValue: System.getenv('DATADOG_TOKEN')
-        tags title: 'Tags', description: 'Default tags for that serie', required: false,
-                defaultValue: 'rundeck:${execution.project},rundeck:${execution.group},rundeck:${execution.status},rundeck:${execution.project}:${execution.status}'
+        serie(
+            title: 'Serie : ',
+            description: 'Name for the serie:',
+            required: true,
+            defaultValue: 'rundeck.${execution.project}.${execution.job.group}.${execution.job.name}'
+        )
+        api_key(
+            title: 'Api key : ',
+            description: 'Application key',
+            required: true,
+            defaultValue: System.getenv('DATADOG_TOKEN')
+        )
+        host(
+            title: 'Hostname : ',
+            description: 'Hostname where the metric happens',
+            required: false,
+            defaultValue: "hostname".execute().text
+        )
+        tags(
+            title: 'Tags',
+            description: 'Default tags for that serie',
+            required: false,
+            defaultValue: 'rundeck:${execution.project},rundeck:${execution.job.group},rundeck:${execution.status},rundeck:${execution.project}:${execution.status}'
+        )
     }
 
     onstart { Map execution, Map configuration ->
         println "ONSTART"
-        MetricsPlugin.onStart(execution, configuration)
+        def metrics = new MetricsPlugin()
+        metrics.onStart(execution, configuration)
 
-        return true
+        true
     }
     onsuccess { Map execution, Map configuration ->
         println "ONSUCCESS"
-        MetricsPlugin.onSuccess(execution, configuration)
+        def metrics = new MetricsPlugin()
+        metrics.onSuccess(execution, configuration)
 
-        return true
+        true
     }
     onfailure { Map execution, Map configuration ->
         println "ONFAILURE"
-        MetricsPlugin.onFailure(execution, configuration)
+        def metrics = new MetricsPlugin()
+        metrics.onFailure(execution, configuration)
 
-        return true
+        true
     }
 }

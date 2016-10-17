@@ -71,7 +71,7 @@ class RundeckDatadogLoggerTestCase extends GroovyTestCase {
                             } ] as Writer)
                 }],
                 inputStream: [withReader: {
-                    Closure c -> [status: "success"]
+                    Closure c -> [status: "ok"]
                 }],
                 setRequestMethod: {},
                 addRequestProperty: { a, b ->
@@ -123,9 +123,9 @@ class RundeckDatadogLoggerTestCase extends GroovyTestCase {
      }
 
     void testMetricsOnSuccess() {
-        def ts = 197126
-        def cfg = [eggs: "Spam", host: "Hostname"]
-        def serie = new Serie('metric.for.serie', [new Point(1, ts)], "Hostname", [])
+        def ts = Date.parse('yyyy-MM-dd hh:mm', '2016-09-21 12:00')
+        def cfg = [eggs: "Spam", hostname: "Hostname", tags: "foo,bar"]
+        def serie = new Serie('metric.for.serie', [new Point(1, ts)], "Hostname", ["foo", "bar"])
         SimpleTemplateEngine.metaClass.createTemplate = {'metric.for.serie'}
         def plugin = new MetricsPlugin()
         Point.metaClass.constructor = { v -> new Point(v, ts) }
@@ -137,9 +137,9 @@ class RundeckDatadogLoggerTestCase extends GroovyTestCase {
     }
 
     void testMetricsOnFailure() {
-        def ts = 197126
-        def cfg = [eggs: "Spam", host: "Hostname"]
-        def serie = new Serie('metric.for.serie', [new Point(-1, 197126)], "Hostname", [])
+        def ts = Date.parse('yyyy-MM-dd hh:mm', '2016-09-21 12:00')
+        def cfg = [eggs: "Spam", hostname: "Hostname", tags: "foo,bar"]
+        def serie = new Serie('metric.for.serie', [new Point(-1, ts)], "Hostname", ["foo", "bar"])
         SimpleTemplateEngine.metaClass.createTemplate = {'metric.for.serie'}
         def plugin = new MetricsPlugin()
         Point.metaClass.constructor = { v -> new Point(v, ts) }
@@ -152,8 +152,8 @@ class RundeckDatadogLoggerTestCase extends GroovyTestCase {
 
     void testMetricsOnStart() {
         def ts = 197126
-        def cfg = [eggs: "Spam", host: "Hostname"]
-        def serie = new Serie('metric.for.serie', [new Point(0, 197126)], "Hostname", [])
+        def cfg = [eggs: "Spam", hostname: "Hostname", tags: "foo,bar"]
+        def serie = new Serie('metric.for.serie', [new Point(0, 197126)], "Hostname", ["foo", "bar"])
         SimpleTemplateEngine.metaClass.createTemplate = {'metric.for.serie'}
         def plugin = new MetricsPlugin()
         Point.metaClass.constructor = { v -> new Point(v, ts) }
