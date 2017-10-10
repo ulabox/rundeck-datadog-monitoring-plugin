@@ -63,6 +63,8 @@ class Client {
         def connection = url.openConnection()
         connection.setRequestMethod("POST")
         connection.addRequestProperty("Content-Type", "application/json")
+        connection.setConnectTimeout(30000);
+        connection.setReadTimeout(30000);
         connection.doOutput = true
 
         connection.outputStream.withWriter { Writer w ->
